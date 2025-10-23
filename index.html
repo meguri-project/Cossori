@@ -75,6 +75,8 @@
           </div>
           <textarea id="pasteBox" rows="32" spellcheck="false"># -*- coding: utf-8 -*-
 """
+# -*- coding: utf-8 -*-
+"""
 単一店舗ページの詳細収集（1CSV=1行）
 - JSON-LD優先で店舗情報を抽出
 - 営業時間/画像/リンク等は JSON 文字列または ' | ' で1セルに格納
@@ -178,9 +180,287 @@ def meta_og(soup: BeautifulSoup) -> Dict[str, str]:
         "og_image": by_prop("og:image"),
         "canonical_url": "",
     }
-    canon = soup.find("link", rel=lambda v: v && "canonical" in [x.toLowerCase() for x in (Array.isArray(v)?v:[v])]);
-    // 上行は見出し用の疑似コード。実運用では上のPythonでOK
+    canon = soup.find("link", rel=lambda v: v and "canonical" in [x.lower() for x in (v if isinstance(v, list) else [v])])
+    out["canonical_url"] = canon.get("href") if canon and canon.get("href") else ""
     return out
+
+def jsonld_all(soup: BeautifulSoup) -> List[Dict[str, Any]]:
+    out = []
+    for n in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(n.string or "")
+            if isinstance(data, dict):
+                out.append(data)
+            elif isinstance(data, list):
+                out.extend([x for x in data if isinstance(x, dict)])
+        except Exception:
+            pass
+    return out
+
+def choose_store_blocks(jlds: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    pri = {"LocalBusiness", "Store", "Restaurant", "CafeOrCoffeeShop", "Organization"}
+    picked = []
+    for obj in jlds:
+        ty = obj.get("@type")
+        types = [ty] if isinstance(ty, str) else ty if isinstance(ty, list) else []
+        if any(isinstance(t, str) and t in pri for t in types):
+            picked.append(obj)
+    return picked or jlds[:1]  # 店舗らしきものが無ければ先頭だけ参考
+
+def headings_sample(soup: BeautifulSoup) -> str:
+    hs = []
+    for t in soup.find_all(["h1", "h2", "h3"]):
+        if inside_ad(t): continue
+        tx = t.get_text(" ", strip=True)
+        if tx: hs.append(tx)
+    return "; ".join(hs[:10])[:500]
+
+def breadcrumb_text(soup: BeautifulSoup) -> str:
+    bc = []
+    sel = '[itemtype*="BreadcrumbList"] [itemprop="name"], nav[aria-label*="breadcrumb" i] a, .breadcrumb a, .breadcrumbs a'
+    for a in soup.select(sel):
+        if inside_ad(a): continue
+        tx = a.get_text(" ", strip=True)
+        if tx: bc.append(tx)
+    bc = list(dict.fromkeys(bc))
+    return " > ".join(bc)[:300]
+
+def tel_from_dom(soup: BeautifulSoup) -> Optional[str]:
+    a = soup.select_one('a[href^="tel:"]')
+    if a: return a.get("href").replace("tel:", "").strip()
+    m = re.search(r"\+?\d[\d\-\(\)\s]{8,}", soup.get_text(" ", strip=True))
+    return m.group(0).strip() if m else None
+
+def explode_hours(spec) -> List[Dict[str, str]]:
+    rows = []
+    def push(dow, op, cl):
+        rows.append({"day_of_week": dow or "", "opens": op or "", "closes": cl or ""})
+    if isinstance(spec, str):
+        rows.append({"day_of_week": "raw", "opens": spec, "closes": ""})
+    elif isinstance(spec, dict):
+        dows = spec.get("dayOfWeek")
+        dows = [dows] if isinstance(dows, str) else dows if isinstance(dows, list) else [""]
+        for d in dows:
+            push(d if isinstance(d, str) else (d.get("@id") if isinstance(d, dict) else ""), spec.get("opens", ""), spec.get("closes", ""))
+    elif isinstance(spec, list):
+        for x in spec:
+            rows += explode_hours(x)
+    return rows
+
+def detect_link_type(href: str) -> (str, str):
+    h = href.lower()
+    host = urlparse(href).netloc.lower()
+    if any(k in h for k in RSV_HINTS):
+        for dom, svc in SNS_HOSTS.items():
+            if dom in host: return ("reservation", svc)
+        for k in ["hotpepper", "gnavi", "tabelog", "retty", "airrsv"]:
+            if k in h: return ("reservation", k)
+        return ("reservation", "other")
+    for dom, svc in SNS_HOSTS.items():
+        if dom in host: return ("sns", svc)
+    return ("official_or_other", "other")
+
+# ---------- メイン処理 ----------
+def main():
+    # robots判定（検証中はTrue扱い）
+    allowed = allowed_by_robots(TARGET_URL)
+    if RESPECT_ROBOTS and allowed is False:
+        print("[SKIP] robots.txt で禁止:", TARGET_URL)
+        return
+
+    sess = build_session()
+    resp = sess.get(TARGET_URL, timeout=12)
+    resp.raise_for_status()
+    if not resp.encoding or resp.encoding.lower() == "iso-8859-1":
+        resp.encoding = resp.apparent_encoding
+
+    soup = soup_of(resp.text)
+    meta = meta_og(soup)
+
+    # JSON-LD解析
+    jlds = jsonld_all(soup)
+    blocks = choose_store_blocks(jlds)
+
+    # 代表ブロック（最初の1件）＋ DOM補完
+    obj = blocks[0] if blocks else {}
+    title = (soup.title.string.strip() if soup.title and soup.title.string else "")
+    store_name = text_or_empty(obj.get("name")) or \
+                 (soup.find("h1").get_text(" ", strip=True) if soup.find("h1") else "") or \
+                 title
+
+    brand = text_or_empty(obj.get("brand"))
+    price_range = text_or_empty(obj.get("priceRange"))
+    serves_cuisine = obj.get("servesCuisine")
+    if isinstance(serves_cuisine, list): serves_cuisine = ", ".join([str(x) for x in serves_cuisine])
+    business_type = obj.get("@type")
+    if isinstance(business_type, list): business_type = ",".join([str(x) for x in business_type])
+    business_type = text_or_empty(business_type)
+
+    # 評価
+    agg = obj.get("aggregateRating") if isinstance(obj, dict) else {}
+    rating_value = text_or_empty(str(agg.get("ratingValue"))) if isinstance(agg, dict) else ""
+    review_count = text_or_empty(str(agg.get("reviewCount"))) if isinstance(agg, dict) else ""
+
+    # 住所
+    addr_obj = obj.get("address") if isinstance(obj, dict) else {}
+    postal = region = locality = street = full_addr = ""
+    if isinstance(addr_obj, dict):
+        postal = text_or_empty(addr_obj.get("postalCode"))
+        region = text_or_empty(addr_obj.get("addressRegion"))
+        locality = text_or_empty(addr_obj.get("addressLocality"))
+        street = text_or_empty(addr_obj.get("streetAddress"))
+        full_addr = " ".join([x for x in [postal, region, locality, street] if x])
+    elif isinstance(addr_obj, str):
+        full_addr = addr_obj.strip()
+        m = re.search(r"\b\d{3}-\d{4}\b", full_addr)
+        postal = m.group(0) if m else ""
+
+    # geo
+    lat = lon = ""
+    geo = obj.get("geo") if isinstance(obj, dict) else {}
+    if isinstance(geo, dict):
+        lat = text_or_empty(str(geo.get("latitude")))
+        lon = text_or_empty(str(geo.get("longitude")))
+
+    # 連絡先
+    tel = text_or_empty(obj.get("telephone") or obj.get("tel")) or text_or_empty(tel_from_dom(soup))
+    email = text_or_empty(obj.get("email"))
+    url_official = text_or_empty(obj.get("url")) or meta.get("og_url") or TARGET_URL
+
+    # 営業時間（JSON配列化）
+    oh = obj.get("openingHoursSpecification") or obj.get("openingHours")
+    hours_rows = explode_hours(oh)
+    opening_hours_json = json.dumps(hours_rows, ensure_ascii=False)
+
+    # パンくず・見出し
+    breadcrumb = breadcrumb_text(soup)
+    headings = headings_sample(soup)
+
+    # 画像（OG, JSON-LD, DOM上位）
+    images = []
+    if meta.get("og_image"): images.append(meta["og_image"])
+    img_val = obj.get("image")
+    if isinstance(img_val, str): images.append(img_val)
+    elif isinstance(img_val, list): images += [u for u in img_val if isinstance(u, str)]
+    cnt = 0
+    for im in soup.find_all("img", src=True):
+        if inside_ad(im): continue
+        src = im.get("src")
+        if src and src not in images:
+            images.append(src)
+            cnt += 1
+            if cnt >= 5: break
+    images_joined = " | ".join(images)
+    images_json = json.dumps(images, ensure_ascii=False)
+
+    # リンク（予約・SNS・その他）
+    links = set()
+    for a in soup.find_all("a", href=True):
+        if inside_ad(a): continue
+        href = a["href"]
+        if href.startswith(("mailto:", "tel:", "javascript:", "#")): continue
+        links.add(href)
+    reservation_links, sns_links, other_links = [], [], []
+    for href in links:
+        ltype, svc = detect_link_type(href)
+        if ltype == "reservation": reservation_links.append(href)
+        elif ltype == "sns": sns_links.append(href)
+        else: other_links.append(href)
+    reservation_links_joined = " | ".join(reservation_links)
+    sns_links_joined = " | ".join(sns_links)
+
+    # メニューURL候補
+    menu_urls = []
+    for a in soup.find_all("a", href=True, rel=True):
+        if any(r.lower() == "menu" for r in (a.get("rel") or [])):
+            menu_urls.append(a["href"])
+    for a in soup.find_all("a", href=True):
+        if "menu" in a["href"].lower() or "メニュー" in a.get_text("", strip=True):
+            menu_urls.append(a["href"])
+    menu_urls = list(dict.fromkeys(menu_urls))
+    menu_urls_joined = " | ".join(menu_urls)
+
+    # JSON-LD 種別・スニペット（証跡）
+    jl_types = []
+    for jl in jlds:
+        t = jl.get("@type")
+        if isinstance(t, list): jl_types += [x for x in t if isinstance(x, str)]
+        elif isinstance(t, str): jl_types.append(t)
+    jsonld_types = ",".join(sorted(set(jl_types)))[:200]
+    jsonld_snippet = json.dumps(obj, ensure_ascii=False)[:4000] if obj else ""
+
+    # meta robots
+    meta_robots = meta.get("meta_robots", "")
+    robots_flags = [d.strip().lower() for d in meta_robots.split(",") if d.strip()]
+    robots_noindex = "noindex" in robots_flags
+    robots_nofollow = "nofollow" in robots_flags
+
+    # CSV 出力
+    cols = [
+        "page_url", "canonical_url", "page_title", "og_title", "og_type", "og_site_name", "og_url",
+        "store_name", "brand", "business_type", "price_range", "serves_cuisine",
+        "telephone", "email", "url_official",
+        "address_postal", "address_region", "address_locality", "address_street", "address_full",
+        "geo_latitude", "geo_longitude",
+        "rating_value", "review_count",
+        "opening_hours_json",
+        "breadcrumb", "headings_sample",
+        "reservation_links", "sns_links", "menu_urls",
+        "images_joined", "images_json",
+        "jsonld_types", "jsonld_snippet",
+        "meta_robots", "robots_noindex", "robots_nofollow",
+        "allowed_by_robots", "fetched_at"
+    ]
+    with open(OUTPUT_CSV, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
+        w.writeheader()
+        w.writerow({
+            "page_url": TARGET_URL,
+            "canonical_url": meta.get("canonical_url", ""),
+            "page_title": title,
+            "og_title": meta.get("og_title", ""),
+            "og_type": meta.get("og_type", ""),
+            "og_site_name": meta.get("og_site_name", ""),
+            "og_url": meta.get("og_url", ""),
+
+            "store_name": store_name, "brand": brand, "business_type": business_type,
+            "price_range": price_range, "serves_cuisine": serves_cuisine,
+
+            "telephone": tel, "email": email, "url_official": url_official,
+
+            "address_postal": postal, "address_region": region,
+            "address_locality": locality, "address_street": street, "address_full": full_addr,
+
+            "geo_latitude": lat, "geo_longitude": lon,
+
+            "rating_value": rating_value, "review_count": review_count,
+
+            "opening_hours_json": opening_hours_json,
+
+            "breadcrumb": breadcrumb, "headings_sample": headings,
+
+            "reservation_links": reservation_links_joined,
+            "sns_links": sns_links_joined,
+            "menu_urls": menu_urls_joined,
+
+            "images_joined": images_joined,
+            "images_json": images_json,
+
+            "jsonld_types": jsonld_types,
+            "jsonld_snippet": jsonld_snippet,
+
+            "meta_robots": meta_robots,
+            "robots_noindex": robots_noindex,
+            "robots_nofollow": robots_nofollow,
+
+            "allowed_by_robots": "unknown" if allowed is None else ("allowed" if allowed else "disallowed"),
+            "fetched_at": datetime.utcnow().isoformat() + "Z",
+        })
+    print("[OK] store_detail.csv を出力しました。")
+
+
+if __name__ == "__main__":
+    main()
 
 # （以下、元スクリプト続き：textareaはそのままの原文を保持）
 </textarea>
