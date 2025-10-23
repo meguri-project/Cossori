@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>テキスト公開ページ｜貼り付け専用付き</title>
+  <meta name="description" content="GitHub＆Netlifyに置ける、テキスト公開用の単一HTML。貼り付け→コピー→削除の一時置き場を搭載。" />
+  <!-- 必要に応じてnoindexに切替してください。 -->
+  <!-- <meta name="robots" content="noindex,nofollow" /> -->
+  <style>
+    :root { --bg:#0b1020; --card:#0f172a; --fg:#e5e7eb; --muted:#9ca3af; --acc:#60a5fa; --border:#1f2937; }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{margin:0;background:linear-gradient(180deg,#0b1020,#0b1020 40%,#0f1324);color:var(--fg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Hiragino Kaku Gothic ProN",Meiryo,"Noto Sans JP",sans-serif;line-height:1.7;letter-spacing:.2px}
+    .wrap{max-width:880px;margin:0 auto;padding:24px 16px 64px}
+    header{position:sticky;top:0;z-index:20;backdrop-filter:blur(8px);background:linear-gradient(180deg,rgba(11,16,32,.9),rgba(11,16,32,.65));border-bottom:1px solid var(--border)}
+    .head-inner{max-width:880px;margin:0 auto;padding:14px 16px;display:flex;gap:12px;align-items:center}
+    h1{font-size:clamp(18px,2.4vw,24px);margin:0}
+    .subtitle{color:var(--muted);font-size:12px}
+    .toolbar{margin-left:auto;display:flex;gap:8px}
+    button,input[type="search"]{border:1px solid var(--border);background:#0c1429;color:var(--fg);padding:8px 12px;border-radius:12px;font:inherit;outline:none}
+    button:hover{border-color:#2b3a52;cursor:pointer}
+    input[type="search"]{width:min(46vw,320px)}
+    main{background:var(--card);border:1px solid var(--border);border-radius:20px;padding:20px;margin-top:18px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+    .meta{color:var(--muted);font-size:12px;margin-bottom:10px;display:flex;gap:10px;flex-wrap:wrap}
+    .block{border:1px dashed #22304a;border-radius:14px;padding:16px;margin:12px 0;background:rgba(255,255,255,.02)}
+    .block h2{font-size:clamp(16px,2.2vw,22px);margin:0 0 8px}
+    .block .tag{font-size:11px;color:var(--muted)}
+    .block p,.block li,.block pre,.block code{font-size:clamp(14px,1.9vw,16px)}
+    .block a{color:var(--acc);text-decoration:none}
+    .block a:hover{text-decoration:underline}
+    details{border:1px solid #1e2a44;border-radius:12px;padding:12px 14px;background:rgba(255,255,255,.02)}
+    details+details{margin-top:10px}
+    summary{cursor:pointer;color:var(--fg)}
+    pre{overflow:auto;padding:12px;background:#0a1224;border:1px solid var(--border);border-radius:10px}
+    code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace}
+    footer{color:var(--muted);text-align:center;font-size:12px;padding:24px 0 0}
+    .row{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 6px}
+    #pasteBox{width:100%;resize:vertical;border-radius:12px;padding:12px;background:#0a1224;color:var(--fg);border:1px solid var(--border)}
+  </style>
+</head>
+<body>
+  <header>
+    <div class="head-inner">
+      <div>
+        <h1>テキスト公開ページ</h1>
+        <div class="subtitle">GitHub / Netlify にそのままデプロイ可（単一HTML）</div>
+      </div>
+      <div class="toolbar">
+        <input id="q" type="search" placeholder="ページ内検索…(テキストを絞り込み)" aria-label="検索" />
+        <button id="copyAll" title="本文をすべてコピー">全コピー</button>
+        <button id="toggleIndex" title="検索エンジンのインデックス制御">noindex切替</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <main>
+      <div class="meta">
+        <span>最終更新: <time id="updated"></time></span>
+        <span id="indexState"></span>
+      </div>
+
+      <article id="content" aria-label="本文">
+        <!-- ↓↓↓ この中に自由にテキストを追加してください ↓↓↓ -->
+
+        <section class="block" data-tags="貼り付け 入力 コピー">
+          <h2>■ 掲載データ（貼り付け→コピー→削除の一時置き場）</h2>
+          <p>ここに<strong>テキストをそのまま貼り付け</strong>て使います。右上の <em>全コピー</em> はページ全体をコピーしますが、この枠専用の <strong>「この枠だけコピー」</strong> ボタンも用意しています。作業が終わったらこの枠の内容を削除してください。</p>
+          <div class="row">
+            <button id="copyBox">この枠だけコピー</button>
+            <button id="selectBox">全選択</button>
+            <button id="downloadBox">.txt で保存</button>
+            <span class="tag" id="boxInfo" aria-live="polite"></span>
+          </div>
+          <textarea id="pasteBox" rows="32" spellcheck="false"># -*- coding: utf-8 -*-
+"""
+単一店舗ページの詳細収集（1CSV=1行）
+- JSON-LD優先で店舗情報を抽出
+- 営業時間/画像/リンク等は JSON 文字列または ' | ' で1セルに格納
+- 検証のため robots 無視（後で True に戻せます）
+
+使用方法:
+  1) TARGET_URL を対象ページに差し替え
+  2) .venv を有効化し、pip install requests beautifulsoup4
+  3) python crawl_store_single.py
+  4) store_detail.csv が出力されます
+"""
+
+TARGET_URL = "https://example.com/your/store/page"  # ←← 対象URLに変更
+OUTPUT_CSV = "store_detail.csv"
+
+# 検証モード：robots 無視（後で True に）
+RESPECT_ROBOTS = False
+
+import csv
+import json
+import re
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+from urllib import robotparser
+from urllib.parse import urlparse
+
+import requests
+from bs4 import BeautifulSoup, Tag
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
+
+# ---------- セッション ----------
+def build_session() -> requests.Session:
+    s = requests.Session()
+    retries = Retry(
+        total=3,
+        backoff_factor=0.5,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+    )
+    s.mount("http://", HTTPAdapter(max_retries=retries))
+    s.mount("https://", HTTPAdapter(max_retries=retries))
+    s.headers.update({"User-Agent": "CompanyCrawler/1.0 (+contact: it@example.com)"})
+    return s
+
+# ---------- robots ----------
+def allowed_by_robots(url: str, ua: str = "CompanyCrawler") -> Optional[bool]:
+    if not RESPECT_ROBOTS:
+        return True
+    p = urlparse(url)
+    base = f"{p.scheme}://{p.netloc}/robots.txt"
+    rp = robotparser.RobotFileParser()
+    try:
+        rp.set_url(base)
+        rp.read()
+        return rp.can_fetch(ua, url)
+    except Exception:
+        return None
+
+# ---------- ユーティリティ ----------
+AD_HINT_RE = re.compile(r"(ad|ads|banner|promo|promote|sponsor|sponsored)", re.I)
+SNS_HOSTS = {
+    "instagram.com": "instagram",
+    "x.com": "x",
+    "twitter.com": "x",
+    "facebook.com": "facebook",
+    "line.me": "line",
+}
+RSV_HINTS = ["reserve", "予約", "yoyaku", "airrsv", "hotpepper", "gnavi", "tabelog", "retty"]
+
+def inside_ad(el: Tag) -> bool:
+    node = el
+    while node and isinstance(node, Tag):
+        ident = (node.get("id") or "")
+        classes = " ".join(node.get("class", [])).strip()
+        if AD_HINT_RE.search(ident) or AD_HINT_RE.search(classes):
+            return True
+        node = node.parent
+    return False
+
+def text_or_empty(x: Optional[str]) -> str:
+    return (x or "").strip()
+
+def soup_of(html: str) -> BeautifulSoup:
+    return BeautifulSoup(html, "html.parser")
+
+def meta_og(soup: BeautifulSoup) -> Dict[str, str]:
+    def by_name(n):
+        t = soup.find("meta", attrs={"name": n})
+        return t.get("content") if t and t.get("content") else ""
+    def by_prop(p):
+        t = soup.find("meta", attrs={"property": p})
+        return t.get("content") if t and t.get("content") else ""
+    out = {
+        "meta_description": by_name("description"),
+        "meta_robots": by_name("robots"),
+        "og_title": by_prop("og:title"),
+        "og_type": by_prop("og:type"),
+        "og_site_name": by_prop("og:site_name"),
+        "og_url": by_prop("og:url"),
+        "og_image": by_prop("og:image"),
+        "canonical_url": "",
+    }
+    canon = soup.find("link", rel=lambda v: v && "canonical" in [x.toLowerCase() for x in (Array.isArray(v)?v:[v])]);
+    // 上行は見出し用の疑似コード。実運用では上のPythonでOK
+    return out
+
+# （以下、元スクリプト続き：textareaはそのままの原文を保持）
+</textarea>
+          <p class="tag">※ この枠は貼り付け→コピー→削除の一時置き場です。ページ全体コピーはヘッダーの「全コピー」を使ってください。</p>
+        </section>
+
+        <section class="block" data-tags="概要 intro">
+          <h2>■ 概要</h2>
+          <p>会社環境に直接データを送れない時の暫定措置として、社内周知・共有用のテキストを外部向け静的ページで公開するためのテンプレートです。GitHub Pages や Netlify にアップロードすれば、そのまま閲覧できます。</p>
+          <ul>
+            <li>単一ファイル（HTMLだけ）</li>
+            <li>ページ内検索（上部検索ボックス）</li>
+            <li>本文の一括コピー（「全コピー」ボタン）</li>
+            <li>noindex切替（「noindex切替」ボタン）</li>
+          </ul>
+        </section>
+
+        <section class="block" data-tags="連絡事項 notes">
+          <h2>■ 連絡事項</h2>
+          <p>ここに連絡事項を列挙します。箇条書きや段落を追加してください。</p>
+        </section>
+
+        <section class="block" data-tags="詳細 details">
+          <h2>■ 詳細</h2>
+          <details>
+            <summary>サンプル：補足の折りたたみ</summary>
+            <pre><code>サンプルログ: 2025-10-23 16:00 JST
+- 実施: テストX
+- 結果: OK</code></pre>
+          </details>
+        </section>
+
+        <section class="block" data-tags="リンク links">
+          <h2>■ 関連リンク</h2>
+          <ul>
+            <li><a href="#" rel="noopener noreferrer">社内Wiki（例）</a></li>
+            <li><a href="#" rel="noopener noreferrer">問い合わせフォーム（例）</a></li>
+          </ul>
+          <p class="tag">※ 外部公開が不都合なURLは貼らないでください。</p>
+        </section>
+
+        <!-- ↑↑↑ ここまで自由に追記OK ↑↑↑ -->
+      </article>
+
+      <footer>
+        <p>&copy; 2025 テキスト公開ページ（単一HTML）</p>
+      </footer>
+    </main>
+  </div>
+
+  <script>
+    // 表示用の更新日時
+    const updatedEl = document.getElementById('updated');
+    const now = new Date();
+    const fmt = new Intl.DateTimeFormat('ja-JP', { dateStyle: 'full', timeStyle: 'short' }).format(now);
+    updatedEl.textContent = fmt;
+
+    // noindex のON/OFF表示
+    const indexStateEl = document.getElementById('indexState');
+    const robotsMeta = document.querySelector('meta[name="robots"]');
+    function refreshIndexState(){
+      const off = !!robotsMeta && /noindex/i.test(robotsMeta.getAttribute('content'));
+      indexStateEl.textContent = `検索エンジン: ${off ? 'インデックスOFF（noindex）' : 'インデックスON'}`;
+    }
+    refreshIndexState();
+
+    // noindex切替
+    document.getElementById('toggleIndex').addEventListener('click', () => {
+      const head = document.querySelector('head');
+      const existing = document.querySelector('meta[name="robots"]');
+      if (existing) existing.remove();
+      else {
+        const m = document.createElement('meta');
+        m.setAttribute('name','robots');
+        m.setAttribute('content','noindex,nofollow');
+        head.appendChild(m);
+      }
+      refreshIndexState();
+    });
+
+    // 全文コピー
+    document.getElementById('copyAll').addEventListener('click', async () => {
+      const text = document.getElementById('content').innerText;
+      try {
+        await navigator.clipboard.writeText(text);
+        const btn = document.getElementById('copyAll');
+        const prev = btn.textContent; btn.textContent = 'コピーしました';
+        setTimeout(() => btn.textContent = prev, 1400);
+      } catch (e) { alert('コピーに失敗しました: ' + e); }
+    });
+
+    // ページ内検索（.block単位でフィルタ）
+    const q = document.getElementById('q');
+    q.addEventListener('input', () => {
+      const v = q.value.trim().toLowerCase();
+      const blocks = document.querySelectorAll('.block');
+      blocks.forEach(b => {
+        const hay = (b.textContent + ' ' + (b.getAttribute('data-tags')||'')).toLowerCase();
+        b.style.display = hay.includes(v) ? '' : 'none';
+      });
+    });
+
+    // 入力枠（貼り付け専用）のユーティリティ
+    const box = document.getElementById('pasteBox');
+    const info = document.getElementById('boxInfo');
+    const copyBoxBtn = document.getElementById('copyBox');
+    const selectBoxBtn = document.getElementById('selectBox');
+    const downloadBoxBtn = document.getElementById('downloadBox');
+    if (box) {
+      const tell = (msg) => { info.textContent = msg; setTimeout(()=> info.textContent = '', 1600); };
+      copyBoxBtn?.addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(box.value); tell('コピーしました'); }
+        catch(e){ alert('コピーに失敗しました: ' + e); }
+      });
+      selectBoxBtn?.addEventListener('click', () => { box.focus(); box.select(); tell('全選択しました'); });
+      downloadBoxBtn?.addEventListener('click', () => {
+        const blob = new Blob([box.value], {type:'text/plain;charset=utf-8'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'payload.txt'; a.click();
+        setTimeout(()=> URL.revokeObjectURL(url), 1000);
+      });
+    }
+  </script>
+</body>
+</html>
