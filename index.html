@@ -75,6 +75,259 @@
           </div>
           <textarea id="pasteBox" rows="32" spellcheck="false"># -*- coding: utf-8 -*-
 """
+' ===== Module: HolidaysJP.bas =====
+Option Explicit
+
+' 使い方:
+'   =IsHoliday(A2)                 → 祝日名（祝日でない日は ""）
+'   Set d = ListHolidays(2025)     → 2025年の祝日辞書を取得
+'   Set d = ListHolidaysFY(2025)   → 2025年度(2025/4/1〜2026/3/31)の祝日辞書
+'   Call DumpHolidaysFY(2025)      → シート "HolidaysFY" に一覧出力
+
+'----------------------------------
+' 公開関数
+'----------------------------------
+
+Public Function IsHoliday(ByVal d As Date) As String
+    Dim y As Long: y = Year(d)
+    Dim hol As Object: Set hol = ListHolidays(y) ' Dictionary(Date->Name)
+    Dim key As Double: key = CDbl(DateSerial(Year(d), Month(d), Day(d)))
+    If hol.Exists(key) Then
+        IsHoliday = hol(key)
+    Else
+        IsHoliday = ""
+    End If
+End Function
+
+' 暦年の祝日一覧
+' 戻り値: Scripting.Dictionary（Key=CDbl(Date), Item=祝日名）
+Public Function ListHolidays(ByVal y As Long) As Object
+    Dim dic As Object: Set dic = CreateObject("Scripting.Dictionary")
+    dic.CompareMode = 1 ' TextCompare
+
+    ' --- 固定日 ---
+    AddFixed dic, y, 1, 1, "元日"
+    AddFixed dic, y, 2, 11, "建国記念の日"
+    If y >= 2020 Then AddFixed dic, y, 2, 23, "天皇誕生日"
+    AddFixed dic, y, 4, 29, "昭和の日"
+    AddFixed dic, y, 5, 3, "憲法記念日"
+    AddFixed dic, y, 5, 4, "みどりの日"
+    AddFixed dic, y, 5, 5, "こどもの日"
+    If y >= 2016 Then AddFixed dic, y, 8, 11, "山の日"
+    AddFixed dic, y, 11, 3, "文化の日"
+    AddFixed dic, y, 11, 23, "勤労感謝の日"
+
+    ' --- ハッピーマンデー ---
+    If y >= 2000 Then AddFixed dic, y, 1, NthMonday(y, 1, 2), "成人の日"
+    If y >= 2003 Then AddFixed dic, y, 7, NthMonday(y, 7, 3), "海の日"
+    If y >= 2003 Then AddFixed dic, y, 9, NthMonday(y, 9, 3), "敬老の日"
+    If y >= 2000 Then
+        Dim nm As String: nm = IIf(y >= 2020, "スポーツの日", "体育の日")
+        AddFixed dic, y, 10, NthMonday(y, 10, 2), nm
+    End If
+
+    ' --- 春分・秋分（近似）---
+    AddFixed dic, y, 3, VernalEquinoxDay(y), "春分の日"
+    AddFixed dic, y, 9, AutumnalEquinoxDay(y), "秋分の日"
+
+    ' --- 国民の休日（祝日に挟まれた平日）---
+    AddCitizensHoliday dic, y
+
+    ' --- 振替休日（日曜祝日の翌平日へ）---
+    AddSubstituteHolidays dic, y
+
+    ' --- 社内休業日（任意で上乗せ） ---
+    Dim company As Object: Set company = GetCompanyHolidays(y)
+    Dim k As Variant
+    For Each k In company.Keys
+        If Not dic.Exists(k) Then dic.Add k, company(k)
+    Next
+
+    Set ListHolidays = dic
+End Function
+
+' 指定「年度」の祝日一覧（4/1〜翌3/31）
+' 例: 2025年度 → 2025/4/1〜2026/3/31
+' 戻り値: Scripting.Dictionary（Key=CDbl(Date), Item=祝日名）
+Public Function ListHolidaysFY(ByVal fiscalYear As Long) As Object
+    Dim dicFY As Object: Set dicFY = CreateObject("Scripting.Dictionary")
+    dicFY.CompareMode = 1
+
+    Dim y As Long: y = fiscalYear
+    Dim startD As Date: startD = DateSerial(y, 4, 1)
+    Dim endD As Date:   endD   = DateSerial(y + 1, 3, 31)
+
+    Dim yDic As Object:  Set yDic = ListHolidays(y)
+    Dim y1Dic As Object: Set y1Dic = ListHolidays(y + 1)
+
+    CopyInRange yDic, dicFY, startD, endD
+    CopyInRange y1Dic, dicFY, startD, endD
+
+    Set ListHolidaysFY = dicFY
+End Function
+
+' シートに“年度祝日”を書き出すサンプル
+' A1=タイトル, A2=日付, B2=祝日名 として2行目以降に出力
+Public Sub DumpHolidaysFY(ByVal fiscalYear As Long, Optional ByVal targetSheetName As String = "HolidaysFY")
+    Dim dic As Object: Set dic = ListHolidaysFY(fiscalYear)
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(targetSheetName)
+    If ws Is Nothing Then
+        Set ws = ThisWorkbook.Worksheets.Add
+        ws.Name = targetSheetName
+    End If
+    On Error GoTo 0
+
+    ws.Cells.Clear
+    ws.Range("A1").Value = fiscalYear & "年度 祝日一覧"
+    ws.Range("A2").Value = "日付"
+    ws.Range("B2").Value = "祝日名"
+
+    Dim keys() As Double, i As Long, r As Long, k As Variant
+    ReDim keys(0 To dic.Count - 1)
+    i = 0
+    For Each k In dic.Keys
+        keys(i) = CDbl(k): i = i + 1
+    Next
+    QuickSort keys, LBound(keys), UBound(keys)
+
+    r = 3
+    For i = LBound(keys) To UBound(keys)
+        ws.Cells(r, 1).Value = CDate(keys(i))
+        ws.Cells(r, 1).NumberFormatLocal = "yyyy/mm/dd(aaa)"
+        ws.Cells(r, 2).Value = dic(keys(i))
+        r = r + 1
+    Next i
+
+    ws.Columns("A:B").AutoFit
+End Sub
+
+'----------------------------------
+' 内部関数
+'----------------------------------
+
+Private Sub AddFixed(ByRef dic As Object, ByVal y As Long, ByVal m As Long, ByVal d As Long, ByVal nm As String)
+    On Error Resume Next
+    Dim dt As Date: dt = DateSerial(y, m, d)
+    If Year(dt) = y Then
+        Dim key As Double: key = CDbl(dt)
+        If Not dic.Exists(key) Then dic.Add key, nm
+    End If
+End Sub
+
+Private Function NthMonday(ByVal y As Long, ByVal m As Long, ByVal n As Long) As Long
+    Dim dt As Date: dt = DateSerial(y, m, 1)
+    Dim w As Long: w = Weekday(dt, vbSunday) ' 1=日 … 7=土
+    Dim offset As Long: offset = ((9 - w) Mod 7) ' 1週目の月曜までのずれ
+    NthMonday = 1 + offset + 7 * (n - 1)
+End Function
+
+Private Function VernalEquinoxDay(ByVal y As Long) As Long
+    ' 春分日（近似: 1980年基準）
+    Dim d As Double
+    d = Int(20.8431 + 0.242194 * (y - 1980) - Int((y - 1980) / 4))
+    VernalEquinoxDay = CLng(d)
+End Function
+
+Private Function AutumnalEquinoxDay(ByVal y As Long) As Long
+    ' 秋分日（近似: 1980年基準）
+    Dim d As Double
+    d = Int(23.2488 + 0.242194 * (y - 1980) - Int((y - 1980) / 4))
+    AutumnalEquinoxDay = CLng(d)
+End Function
+
+Private Sub AddSubstituteHolidays(ByRef dic As Object, ByVal y As Long)
+    ' 日曜の祝日の翌平日（既存祝日を飛ばして次の平日）を振替
+    Dim dates() As Double: dates = SortedKeys(dic)
+    Dim i As Long
+    For i = LBound(dates) To UBound(dates)
+        Dim dt As Date: dt = CDate(dates(i))
+        If Weekday(dt, vbSunday) = vbSunday Then
+            Dim d As Date: d = dt + 1
+            Do While Weekday(d, vbSunday) = vbSunday Or dic.Exists(CDbl(d))
+                d = d + 1
+            Loop
+            If Year(d) = y Then
+                Dim k As Double: k = CDbl(d)
+                If Not dic.Exists(k) Then dic.Add k, "振替休日"
+            End If
+        End If
+    Next i
+End Sub
+
+Private Sub AddCitizensHoliday(ByRef dic As Object, ByVal y As Long)
+    ' 祝日に挟まれた平日を「国民の休日」に
+    Dim dates() As Double: dates = SortedKeys(dic)
+    Dim i As Long
+    For i = LBound(dates) To UBound(dates) - 1
+        Dim d1 As Date: d1 = CDate(dates(i))
+        Dim d2 As Date: d2 = CDate(dates(i + 1))
+        If d2 - d1 = 2 Then
+            Dim mid As Date: mid = d1 + 1
+            If Weekday(mid, vbSunday) <> vbSunday Then
+                Dim k As Double: k = CDbl(mid)
+                If Not dic.Exists(k) Then dic.Add k, "国民の休日"
+            End If
+        End If
+    Next i
+End Sub
+
+Private Function SortedKeys(ByRef dic As Object) As Double()
+    Dim arr() As Double
+    ReDim arr(0 To dic.Count - 1)
+    Dim i As Long: i = 0
+    Dim k As Variant
+    For Each k In dic.Keys
+        arr(i) = CDbl(k)
+        i = i + 1
+    Next
+    QuickSort arr, LBound(arr), UBound(arr)
+    SortedKeys = arr
+End Function
+
+Private Sub QuickSort(ByRef a() As Double, ByVal lo As Long, ByVal hi As Long)
+    Dim i As Long, j As Long, p As Double, t As Double
+    i = lo: j = hi
+    p = a((lo + hi) \ 2)
+    Do While i <= j
+        Do While a(i) < p: i = i + 1: Loop
+        Do While a(j) > p: j = j - 1: Loop
+        If i <= j Then
+            t = a(i): a(i) = a(j): a(j) = t
+            i = i + 1: j = j - 1
+        End If
+    Loop
+    If lo < j Then QuickSort a, lo, j
+    If i < hi Then QuickSort a, i, hi
+End Sub
+
+' 範囲内のキーだけコピー
+Private Sub CopyInRange(ByRef src As Object, ByRef dst As Object, ByVal dFrom As Date, ByVal dTo As Date)
+    Dim k As Variant, dt As Date, kd As Double
+    For Each k In src.Keys
+        dt = CDate(k)
+        If dt >= dFrom And dt <= dTo Then
+            kd = CDbl(dt)
+            If Not dst.Exists(kd) Then dst.Add kd, src(k)
+        End If
+    Next
+End Sub
+
+' --- 社内休業日（必要時に上乗せ）---
+Private Function GetCompanyHolidays(ByVal y As Long) As Object
+    Dim dic As Object: Set dic = CreateObject("Scripting.Dictionary")
+    dic.CompareMode = 1
+    ' 例: 毎年6/1 → 創立記念日
+    ' AddCompany dic, DateSerial(y, 6, 1), "創立記念日"
+    Set GetCompanyHolidays = dic
+End Function
+
+Private Sub AddCompany(ByRef dic As Object, ByVal dt As Date, ByVal nm As String)
+    Dim k As Double: k = CDbl(DateSerial(Year(dt), Month(dt), Day(dt)))
+    If Not dic.Exists(k) Then dic.Add k, nm
+End Sub
+' ===== End of Module =====
 
 
 # （以下、元スクリプト続き：textareaはそのままの原文を保持）
